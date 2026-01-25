@@ -223,6 +223,285 @@
     </div>
 
     <script>
+
+// 【重要】1. 自分のGASの「ウェブアプリURL」に書き換えてください
+const API = "https://script.google.com/macros/s/XXXXX/exec";
+
+// 固定の問題1
+const FIXED_Q1 = {type:"choice", question:"自由に投稿してね✨️", options:["投稿する"], answer:-1};
+
+let quizData = [];
+let currentQuestion = 0;
+
+// アプリの起動（Startボタン押下時）
+function initApp() {
+    const bgm = document.getElementById('bgm');
+    bgm.play().catch(e => console.log("Audio play blocked"));
+    document.getElementById('start-overlay').style.display = 'none';
+    show('scene-opening');
+    
+    // GASから問題を読み込む
+    loadQuestionsFromGAS();
+    
+    setTimeout(() => show('scene-select'), 5000);
+}
+
+// 1. スプレッドシートから問題を読み込む（doGetを使用）
+async function loadQuestionsFromGAS() {
+    try {
+        const res = await fetch(API + "?type=questions");
+        const rows = await res.json();
+        
+        // スプレッドシートのデータをクイズ形式に変換
+        // 0列目:日付, 1列目:問題文, 2列目:答え(記述用)
+        quizData = rows.slice(1).map(r => ({
+            type: "input",
+            question: r[1],
+            answer: r[2]
+        }));
+
+        quizData.unshift(FIXED_Q1); // 固定問題を最初に追加
+        buildQuestionList();
+    } catch (e) {
+        console.error("問題の読み込みに失敗しました:", e);
+    }
+}
+
+// 2. コメントをGAS経由で保存する（doPostを使用）
+async function postComment() {
+    const name = document.getElementById("author-input").value.trim();
+    const comment = document.getElementById("comment-input").value.trim();
+    
+    if (!name || !comment) return alert("名前とコメントを入力してください");
+
+    try {
+        await fetch(API, {
+            method: "POST",
+            mode: "no-cors", // ブラウザのエラー回避用
+            body: JSON.stringify({
+                type: "comment",
+                qid: currentQuestion,
+                name: name,
+                comment: comment
+            })
+        });
+
+        document.getElementById("comment-input").value = "";
+        alert("送信しました！（反映まで数秒かかる場合があります）");
+        
+        // 数秒待ってから再読み込み
+        setTimeout(loadCommentsFromGAS, 1000);
+    } catch (e) {
+        alert("送信に失敗しました");
+    }
+}
+
+// 3. コメントをGASから読み込む（doGetを使用）
+async function loadCommentsFromGAS() {
+    const list = document.getElementById("comment-list");
+    list.innerHTML = "読み込み中...";
+    
+    try {
+        const res = await fetch(`${API}?type=comments&qid=${currentQuestion}`);
+        const rows = await res.json();
+        
+        list.innerHTML = "";
+        rows.forEach(r => {
+            const div = document.createElement("div");
+            div.className = "comment-box";
+            // r[1]は名前, r[2]はコメント
+            div.innerHTML = `<strong>👤 ${r[1]}</strong><br><p>${r[2]}</p>`;
+            list.appendChild(div);
+        });
+    } catch (e) {
+        list.innerHTML = "投稿はまだありません。";
+    }
+}
+
+// --- 以下、画面制御用の基本機能（変更なし） ---
+
+function show(id) {
+    document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
+    const target = document.getElementById(id);
+    if(target) {
+        target.classList.add("active");
+        if(id === 'scene-select') buildQuestionList();
+    }
+}
+
+function buildQuestionList() {
+    const list = document.getElementById("question-list");
+    list.innerHTML = "";
+    let correctCount = 0;
+    quizData.forEach((q, i) => {
+        const isCleared = localStorage.getItem("q_cleared_" + i) === "true";
+        if(isCleared) correctCount++;
+        const btn = document.createElement("button");
+        btn.className = "submit-btn";
+        btn.innerText = `第${i+1}問: ${q.question}${isCleared ? " ✅" : ""}`;
+        btn.onclick = () => {
+            currentQuestion = i;
+            loadQuestion();
+            show('scene-quiz');
+        };
+        list.appendChild(btn);
+    });
+}
+
+function loadQuestion() {
+    const d = quizData[currentQuestion];
+    document.getElementById("question-num").innerText = `第${currentQuestion+1}問`;
+    document.getElementById("question-text").innerText = d.question;
+    
+    const optionsArea = document.getElementById("options-area");
+    const inputArea = document.getElementById("input-area");
+    optionsArea.innerHTML = "";
+
+    if(d.type === "choice") {
+        optionsArea.style.display = "flex";
+        inputArea.style.display = "none";
+        d.options.forEach((optText, index) => {
+            const btn = document.createElement("button");
+            btn.className = "option-btn";
+            btn.innerText = optText;
+            btn.onclick = () => checkAnswer(index);
+            optionsArea.appendChild(btn);
+        });
+    } else {
+        optionsArea.style.display = "none";
+        inputArea.style.display = "block";
+        document.getElementById("answer-input").value = "";
+    }
+}
+
+function checkAnswer(i) {
+    let ok = (currentQuestion === 0) ? true : (i === quizData[currentQuestion].answer);
+    if(ok) { localStorage.setItem("q_cleared_" + currentQuestion, "true"); triggerFlash(); }
+    showResult(ok);
+}
+
+function checkTextAnswer() {
+    let ok = (currentQuestion === 0) ? true : (document.getElementById("answer-input").value.trim() === quizData[currentQuestion].answer);
+    if(ok) { localStorage.setItem("q_cleared_" + currentQuestion, "true"); triggerFlash(); }
+    showResult(ok);
+}
+
+function showResult(ok) {
+    document.getElementById("judge-text").innerText = ok ? "正解！" : "残念…";
+    loadCommentsFromGAS(); // コメント読み込み
+    show('scene-comment');
+}
+
+function triggerFlash() {
+    const f = document.getElementById('flash');
+    f.classList.remove('flash-hit'); void f.offsetWidth; f.classList.add('flash-hit');
+}
+
+function startEnding() {
+    show('scene-ending');
+    setTimeout(() => { location.reload(); }, 35000);
+}
+
+
+
+
+
+
+
+
+
+
+        
+/*
+        
+// --- scriptタグ内の冒頭部分を以下のように修正します ---
+
+// 2. 【ここを修正】GASでデプロイした時に出たURLを貼り付けてください
+const API = "https://script.google.com/macros/s/XXXXX/exec";
+
+// --- データのやり取りを担当する関数（ここを統合・修正） ---
+
+// 1. スプレッドシートから問題を読み込む
+async function loadQuestionsFromGAS() {
+    try {
+        const res = await fetch(API + "?type=questions");
+        const rows = await res.json();
+        
+        // 0行目は見出しなので slice(1) でカット
+        quizData = rows.slice(1).map(r => ({
+            type: "input",
+            question: r[1], // 2列目：問題文
+            answer: r[2]    // 3列目：答え
+        }));
+
+        quizData.unshift(FIXED_Q1); // 冒頭に固定問題を合体
+        buildQuestionList();
+    } catch (e) {
+        console.error("読み込み失敗:", e);
+    }
+}
+
+// 2. スプレッドシートへコメントを投稿する
+async function postComment() {
+    const name = document.getElementById("author-input").value.trim();
+    const comment = document.getElementById("comment-input").value.trim();
+    
+    if (!name || !comment) return alert("名前とコメントを入れてね");
+
+    // GASにデータを送る
+    await fetch(API, {
+        method: "POST",
+        body: JSON.stringify({
+            type: "comment",
+            qid: currentQuestion,
+            name: name,
+            comment: comment
+        })
+    });
+
+    document.getElementById("comment-input").value = "";
+    alert("投稿しました！");
+    loadCommentsFromGAS(); // 最新の投稿を表示
+}
+
+// 3. スプレッドシートからコメントを取得して表示する
+async function loadCommentsFromGAS() {
+    const list = document.getElementById("comment-list");
+    list.innerHTML = "読み込み中...";
+    
+    const res = await fetch(API + "?type=comments&qid=" + currentQuestion);
+    const rows = await res.json();
+    
+    list.innerHTML = "";
+    rows.forEach(r => {
+        const div = document.createElement("div");
+        div.className = "comment-box";
+        div.innerHTML = `<strong>👤 ${r[1]}</strong><br><p>${r[2]}</p>`;
+        list.appendChild(div);
+    });
+}
+        
+*/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*
+        
         //API URLを追加
         const API = "https://script.google.com/macros/s/XXXX/exec";
 
@@ -266,6 +545,17 @@
             setTimeout(() => show('scene-select'), 5000);
         }
 
+
+*/
+
+
+
+
+
+
+
+
+        
         function show(id) {
             document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
             const target = document.getElementById(id);
